@@ -1,0 +1,100 @@
+name: Deploy to Azure Container Apps
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: chores-azure-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Publish a tested main commit
+    if: github.ref == 'refs/heads/main' && vars.ENABLE_AZURE_DEPLOYMENT == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: azure-production
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    env:
+      ACR_NAME: ${{ vars.AZURE_ACR_NAME }}
+      AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      AZURE_CONTAINER_APP: ${{ vars.AZURE_CONTAINER_APP_NAME }}
+    steps:
+      - name: Verify configuration and successful CI for this exact commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          for setting in ACR_NAME AZURE_RESOURCE_GROUP AZURE_CONTAINER_APP CLIENT_ID TENANT_ID SUBSCRIPTION_ID; do
+            if [[ -z "${!setting}" ]]; then
+              echo "::error::Missing Azure deployment variable: $setting"
+              exit 1
+            fi
+          done
+          run_id="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml \
+            --commit "$GITHUB_SHA" --branch main --event push --status success \
+            --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+          if [[ -z "$run_id" ]]; then
+            echo "::error::CI must have succeeded on a main push for this commit."
+            exit 1
+          fi
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Build deployment image
+        run: docker build --file Dockerfile.azure --tag chores-deploy:build .
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@eec3c95657c1536435858eda1f3ff5437fee8474 # v2.3.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Publish image and resolve its immutable digest
+        id: image
+        run: |
+          az acr login --name "$ACR_NAME"
+          registry="$(az acr show --name "$ACR_NAME" --query loginServer --output tsv)"
+          tagged="$registry/household-chores:$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          docker tag chores-deploy:build "$tagged"
+          docker push "$tagged"
+          image="$(docker image inspect "$tagged" --format '{{index .RepoDigests 0}}')"
+          if [[ "$image" != "$registry/household-chores@sha256:"* ]]; then
+            echo "::error::Could not determine the pushed image digest."
+            exit 1
+          fi
+          echo "uri=$image" >> "$GITHUB_OUTPUT"
+
+      - name: Update the existing Container App
+        env:
+          IMAGE: ${{ steps.image.outputs.uri }}
+        run: |
+          az extension add --name containerapp --yes
+          revision="$(az containerapp update --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_CONTAINER_APP" --image "$IMAGE" \
+            --query properties.latestRevisionName --output tsv)"
+          if [[ -z "$revision" || "$revision" == "None" ]]; then
+            echo "::error::Azure did not report the updated revision."
+            exit 1
+          fi
+          for attempt in {1..24}; do
+            ready="$(az containerapp show --resource-group "$AZURE_RESOURCE_GROUP" \
+              --name "$AZURE_CONTAINER_APP" --query properties.latestReadyRevisionName --output tsv)"
+            if [[ "$ready" == "$revision" ]]; then
+              echo "Revision ready: $revision"
+              exit 0
+            fi
+            echo "Waiting for revision readiness ($attempt/24)."
+            sleep 10
+          done
+          echo "::error::Revision $revision did not become ready. Check its Container Apps logs."
+          exit 1

@@ -1,0 +1,17 @@
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL, username TEXT UNIQUE NOT NULL,
+  password TEXT NOT NULL, role TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS sessions (
+  token TEXT PRIMARY KEY, user_id INTEGER REFERENCES users(id), expires INTEGER
+);
+CREATE TABLE IF NOT EXISTS chores (
+  id INTEGER PRIMARY KEY, title TEXT NOT NULL, details TEXT NOT NULL,
+  frequency TEXT NOT NULL, start TEXT NOT NULL, weekday INTEGER NOT NULL,
+  assignee INTEGER REFERENCES users(id), retired INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS occurrences (
+  chore_id INTEGER REFERENCES chores(id), day TEXT, assignee INTEGER REFERENCES users(id),
+  completed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (chore_id, day)
+);

@@ -1,0 +1,16 @@
+services:
+  chores:
+    build: .
+    ports:
+      - "127.0.0.1:${CHORES_LOCAL_PORT:-8000}:8000"
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-}
+      CHORES_PUBLIC_URL: ${CHORES_PUBLIC_URL:-}
+      CHORES_TRUSTED_PROXY: ${CHORES_TRUSTED_PROXY:-}
+      CHORES_SETUP_KEY: ${CHORES_SETUP_KEY:-}
+      CHORES_TIMEZONE: ${CHORES_TIMEZONE:-America/New_York}
+    volumes:
+      - chores-data:/data
+    restart: unless-stopped
+volumes:
+  chores-data:

@@ -1,0 +1,27 @@
+FROM python:3.13-slim-bookworm
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
+    CHORES_HOST=0.0.0.0 CHORES_DB=/data/chores.sqlite3 \
+    CHORES_REQUIRE_DATA_MOUNT=1
+WORKDIR /app
+RUN groupadd --gid 1000 chores \
+    && useradd --uid 1000 --gid 1000 --no-create-home chores \
+    && install -d -o chores -g chores /data
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && curl -fsSLo /tmp/microsoft.deb https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb \
+    && dpkg -i /tmp/microsoft.deb \
+    && apt-get update \
+    && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql18 \
+    && apt-get purge -y --auto-remove curl \
+    && rm -rf /var/lib/apt/lists/* /tmp/microsoft.deb
+COPY backend/requirements.txt backend/requirements-azure.txt ./
+RUN python -m pip install --no-cache-dir -r requirements-azure.txt
+COPY backend/ ./backend/
+COPY frontend/ ./frontend/
+COPY alembic.ini ./
+COPY scripts/backup_sqlite.py scripts/healthcheck.py scripts/transfer_sqlite.py ./scripts/
+USER chores
+EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD ["python", "scripts/healthcheck.py"]
+CMD ["python", "-m", "backend.wsgi"]
